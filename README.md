@@ -4,7 +4,7 @@ RDPOTP is a secure and convenient solution that adds two-factor authentication (
 Seamless RDP Integration: Hooks into the RDP login process with minimal user impact.
 
 ## Features
-- TOTP Compatibility: Supports popular authenticator apps like Google Authenticator, Microsoft Authenticator, and Authy.
+- RDP Compatibility: Supports popular RDP apps like Microsoft Remote Desktop,mstsc
 
 ## System Requirement
 - .NET Framework: .NET 8.0 (required)
