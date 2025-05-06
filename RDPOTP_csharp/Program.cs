@@ -22,6 +22,7 @@ namespace RdpOtp
         static IPAddress? lastAuthIp = null;
         static DateTime lastAuthTime = DateTime.MinValue;
 
+        //연결정보 클레스
         class ConnectionInfo
         {
             private static int _globalNum = 0;
@@ -37,6 +38,23 @@ namespace RdpOtp
                 this.state = 0;
                 this.time = DateTime.UtcNow;
             }
+
+            //접속시간 갱신
+            public void updateTime(int addTime=0)
+            {
+                this.time = DateTime.UtcNow;
+                //리스트에 없으면 추가
+                var item = connectionList.FirstOrDefault(c => c.num == this.num);
+                if (item == null)
+                {
+                    connectionList.Add(this);
+                    //connectionList가 10개가 넘으면 최근 10개만 남기기
+                    if (connectionList.Count > 10)
+                    {
+                        connectionList.RemoveRange(0, connectionList.Count - 10);
+                    }
+                }
+            }
         }
 
         static List<ConnectionInfo> connectionList = new List<ConnectionInfo>();
@@ -50,7 +68,7 @@ namespace RdpOtp
 
             // Read values
             rdpHost = config["RdpServer:Host"] ?? "127.0.0.1";
-            rdpPort = int.Parse(config["RdpServer:Port"] ?? "3391");
+            rdpPort = int.Parse(config["RdpServer:Port"] ?? "3389");
 
             proxyListenPort = int.Parse(config["Proxy:ListenPort"] ?? "3390");
 
@@ -149,7 +167,7 @@ namespace RdpOtp
 
             ConnectionInfo connectionInfo = new ConnectionInfo((IPEndPoint)client.Client.RemoteEndPoint);
             connectionList.Add(connectionInfo);
-            //connectionList가 10개가 넘으면 최근 10개만 남기기
+            //connectionList가 20개가 넘으면 최근 20개만 남기기
             if (connectionList.Count > 10)
             {
                 connectionList.RemoveRange(0, connectionList.Count - 10);
@@ -162,7 +180,7 @@ namespace RdpOtp
             byte[] negotiationResponsePartial = new byte[]
             {
             0x03, 0x00, 0x00, 0x0b, // TPKT header
-            0x06, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00 // X.224 partial
+            0x06, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, // X.224 partial
             };
 
             await clientStream.WriteAsync(negotiationResponsePartial, 0, negotiationResponsePartial.Length);
@@ -179,7 +197,7 @@ namespace RdpOtp
             else
             {
                 // 인증 대기
-                for (int i = 0; i < 15; i++)
+                for (int i = 0; i < 60; i++)
                 {
                     if (await CheckOtpAuth(connectionInfo)) break;
                     await Task.Delay(1000);
@@ -203,12 +221,12 @@ namespace RdpOtp
 
             try
             {
-                //RDP 서버에 연결
-                var rdpServer = new TcpClient(rdpHost, rdpPort); // ← RDP 서버 IP
+                // RDP 서버에 연결
+                var rdpServer = new TcpClient(rdpHost, rdpPort);
                 using (rdpServer)
+                using (client)
+                using (var rdpStream = rdpServer.GetStream())
                 {
-                    var rdpStream = rdpServer.GetStream();
-
                     // 초기 Negotiation Request → RDP 서버로 전달
                     await rdpStream.WriteAsync(buffer, 0, bytesRead);
                     await rdpStream.FlushAsync();
@@ -218,18 +236,27 @@ namespace RdpOtp
                     var toClient = rdpStream.CopyToAsync(clientStream);
 
                     Console.WriteLine("RDP 데이터 중계 시작...");
-                    await Task.WhenAny(toServer, toClient);
+                    await Task.WhenAny(toServer, toClient);  // 하나라도 끊기면 빠져나옴
+
+                    // 연결 종료 감지 시 모든 작업 완료 대기
+                    await Task.WhenAll(toServer, toClient);
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[!] RDP 서버 연결 실패: {ex.Message}");
+                Console.WriteLine("[*] 연결 종료됨.");
+                connectionInfo.updateTime();
+            }
+            finally
+            {
+                Console.WriteLine("[*] 연결 종료됨.");
+                connectionInfo.updateTime();
             }
         }
 
         static async Task<bool> CheckOtpAuth(ConnectionInfo connectionInfo)
         {
-            if(connectionInfo.state == 1)
+            if (connectionInfo.state == 1)
                 return true;
             return false;
         }
