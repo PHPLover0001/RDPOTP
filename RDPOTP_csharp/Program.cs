@@ -61,20 +61,8 @@ namespace RdpOtp
 
         static async Task Main()
         {
-            // Load config from appsettings.json
-            config = new ConfigurationBuilder()
-                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-                .Build();
-
-            // Read values
-            rdpHost = config["RdpServer:Host"] ?? "127.0.0.1";
-            rdpPort = int.Parse(config["RdpServer:Port"] ?? "3389");
-
-            proxyListenPort = int.Parse(config["Proxy:ListenPort"] ?? "3390");
-
-            // 웹서버 설정 읽기
-            webHost = config["Web:ip"] ?? "+";
-            webPort = int.Parse(config["Web:Port"] ?? "8080");
+            //기본설정 로드
+            LoadConfiguration();
 
             Console.WriteLine($"RDP 서버: {rdpHost}:{rdpPort}");
             Console.WriteLine($"프록시 포트: PORT : {proxyListenPort}");
@@ -167,7 +155,7 @@ namespace RdpOtp
 
             ConnectionInfo connectionInfo = new ConnectionInfo((IPEndPoint)client.Client.RemoteEndPoint);
             connectionList.Add(connectionInfo);
-            //connectionList가 20개가 넘으면 최근 20개만 남기기
+            //connectionList가 10개가 넘으면 최근 10개만 남기기
             if (connectionList.Count > 10)
             {
                 connectionList.RemoveRange(0, connectionList.Count - 10);
@@ -190,7 +178,8 @@ namespace RdpOtp
 
             DateTime now = DateTime.UtcNow;
 
-            if(lastAuthIp != null && lastAuthIp.Equals(ip) && (now - lastAuthTime).TotalSeconds <= 60)
+            //30초내 재연결시 통과
+            if(lastAuthIp != null && lastAuthIp.Equals(ip) && (now - lastAuthTime).TotalSeconds <= 30)
             {
                 connectionInfo.state = 1;
             }
@@ -216,6 +205,7 @@ namespace RdpOtp
             Console.WriteLine("\n[+] 인증 성공! 내부 RDP 서버에 연결 중...");
 
             now = DateTime.UtcNow;
+            
             lastAuthIp = ip;
             lastAuthTime = now;
 
@@ -254,11 +244,31 @@ namespace RdpOtp
             }
         }
 
+        //연결 허용 체크
         static async Task<bool> CheckOtpAuth(ConnectionInfo connectionInfo)
         {
             if (connectionInfo.state == 1)
                 return true;
             return false;
         }
+
+        //appsettings.json로드
+        static void LoadConfiguration()
+        {
+            config = new ConfigurationBuilder()
+                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+                .Build();
+            //Rdp설정
+            rdpHost = config["RdpServer:Host"] ?? "127.0.0.1";
+            rdpPort = int.Parse(config["RdpServer:Port"] ?? "3389");
+            
+            //프록시 포트 설정
+            proxyListenPort = int.Parse(config["Proxy:ListenPort"] ?? "3390");
+            
+            //웹서버 설정
+            webHost = config["Web:ip"] ?? "+";
+            webPort = int.Parse(config["Web:Port"] ?? "8080");
+        }
+
     }
 }
