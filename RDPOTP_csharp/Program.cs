@@ -1,5 +1,5 @@
-﻿using System.Net.Sockets;
-using System.Net;
+﻿using System.Net;
+using System.Net.Sockets;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.Json;
 using Microsoft.Extensions.Configuration.EnvironmentVariables;
@@ -22,41 +22,6 @@ namespace RdpOtp
         static IPAddress? lastAuthIp = null;
         static DateTime lastAuthTime = DateTime.MinValue;
 
-        //연결정보 클레스
-        class ConnectionInfo
-        {
-            private static int _globalNum = 0;
-            public int num { get; private set; }
-            public IPEndPoint EndPoint { get; set; }
-            public int state { get; set; }
-            public DateTime time { get; set; }
-
-            public ConnectionInfo(IPEndPoint endPoint)
-            {
-                this.num = ++_globalNum; // Increment and assign unique num
-                this.EndPoint = new IPEndPoint(endPoint.Address, endPoint.Port);
-                this.state = 0;
-                this.time = DateTime.UtcNow;
-            }
-
-            //접속시간 갱신
-            public void updateTime(int addTime=0)
-            {
-                this.time = DateTime.UtcNow;
-                //리스트에 없으면 추가
-                var item = connectionList.FirstOrDefault(c => c.num == this.num);
-                if (item == null)
-                {
-                    connectionList.Add(this);
-                    //connectionList가 10개가 넘으면 최근 10개만 남기기
-                    if (connectionList.Count > 10)
-                    {
-                        connectionList.RemoveRange(0, connectionList.Count - 10);
-                    }
-                }
-            }
-        }
-
         static List<ConnectionInfo> connectionList = new List<ConnectionInfo>();
 
         static async Task Main()
@@ -74,9 +39,9 @@ namespace RdpOtp
             var listener = new TcpListener(IPAddress.Any, proxyListenPort);
             listener.Start();
             Console.WriteLine("RDP 프록시 서버 실행 중 (포트 3390)...");
-            Console.WriteLine($"웹서버 실행 중: http://{((webHost == "+") ? "localhost" : webHost)}:{webPort}/");
 
             _ = Task.Run(() => RunWebServer());
+            Console.WriteLine($"웹서버 실행 중: http://{((webHost == "localhost") ? "127.0.0.1" : webHost)}:{webPort}/");
 
 
             while (true)
@@ -89,7 +54,7 @@ namespace RdpOtp
         static async Task RunWebServer()
         {
             HttpListener http = new HttpListener();
-            http.Prefixes.Add($"http://+:{webPort}/");
+            http.Prefixes.Add($"http://{webHost}:{webPort}/");
             http.Start();
 
             while (true)
@@ -153,18 +118,16 @@ namespace RdpOtp
             int port = ((IPEndPoint)client.Client.RemoteEndPoint).Port;
             Console.WriteLine($"클라이언트 접속: {ip}");
 
+            // 커넥션 등록
             ConnectionInfo connectionInfo = new ConnectionInfo((IPEndPoint)client.Client.RemoteEndPoint);
-            connectionList.Add(connectionInfo);
-            //connectionList가 10개가 넘으면 최근 10개만 남기기
-            if (connectionList.Count > 10)
-            {
-                connectionList.RemoveRange(0, connectionList.Count - 10);
-            }
+
+            // connectionList에 등록
+            updateTime(connectionInfo);
 
             byte[] buffer = new byte[4096];
             int bytesRead = await clientStream.ReadAsync(buffer, 0, buffer.Length);
 
-            // 시간 끌기용으로 일부 Negotiation Response 전송
+            // Negotiation Response 생성 
             byte[] negotiationResponsePartial = new byte[]
             {
             0x03, 0x00, 0x00, 0x0b, // TPKT header
@@ -178,23 +141,24 @@ namespace RdpOtp
 
             DateTime now = DateTime.UtcNow;
 
-            //30초내 재연결시 통과
-            if(lastAuthIp != null && lastAuthIp.Equals(ip) && (now - lastAuthTime).TotalSeconds <= 30)
+            // 인증후 30초내 재연결시 인증없이 통과
+            var item = connectionList.FirstOrDefault(c => c.EndPoint.Address.ToString() == connectionInfo.EndPoint.Address.ToString());
+            if (item!=null && item.state == 1 && (now - item.time).TotalSeconds <= 60)
             {
-                connectionInfo.state = 1;
+                updateTime(connectionInfo);
             }
             else
             {
                 // 인증 대기
                 for (int i = 0; i < 60; i++)
                 {
-                    if (await CheckOtpAuth(connectionInfo)) break;
+                    if (CheckOtpAuth(connectionInfo)) break;
                     await Task.Delay(1000);
                     Console.WriteLine(i);
                 }
 
                 //연결 중단
-                if (!await CheckOtpAuth(connectionInfo))
+                if (!CheckOtpAuth(connectionInfo))
                 {
                     Console.WriteLine("\n[!] 인증 실패. 연결 종료.");
                     client.Close();
@@ -205,7 +169,7 @@ namespace RdpOtp
             Console.WriteLine("\n[+] 인증 성공! 내부 RDP 서버에 연결 중...");
 
             now = DateTime.UtcNow;
-            
+
             lastAuthIp = ip;
             lastAuthTime = now;
 
@@ -235,17 +199,17 @@ namespace RdpOtp
             catch (Exception ex)
             {
                 Console.WriteLine("[*] 연결 종료됨.");
-                connectionInfo.updateTime();
+                updateTime(connectionInfo);
             }
             finally
             {
                 Console.WriteLine("[*] 연결 종료됨.");
-                connectionInfo.updateTime();
+                updateTime(connectionInfo);
             }
         }
 
         //연결 허용 체크
-        static async Task<bool> CheckOtpAuth(ConnectionInfo connectionInfo)
+        static bool CheckOtpAuth(ConnectionInfo connectionInfo)
         {
             if (connectionInfo.state == 1)
                 return true;
@@ -261,14 +225,36 @@ namespace RdpOtp
             //Rdp설정
             rdpHost = config["RdpServer:Host"] ?? "127.0.0.1";
             rdpPort = int.Parse(config["RdpServer:Port"] ?? "3389");
-            
+
             //프록시 포트 설정
             proxyListenPort = int.Parse(config["Proxy:ListenPort"] ?? "3390");
-            
+
             //웹서버 설정
-            webHost = config["Web:ip"] ?? "+";
+            webHost = config["Web:ip"] ?? "localhost";
             webPort = int.Parse(config["Web:Port"] ?? "8080");
         }
 
+        //접속시간 갱신
+        static void updateTime(ConnectionInfo conn,int addTime = 0)
+        {
+            conn.time = DateTime.UtcNow;
+            //리스트에 없으면 추가
+            var item = connectionList.FirstOrDefault(c => c.EndPoint.Address.ToString() == conn.EndPoint.Address.ToString());
+            if (item == null)
+            {
+                connectionList.Add(conn);
+                //connectionList가 10개가 넘으면 마지막 10개만 남기기
+                if (connectionList.Count > 10)
+                {
+                    connectionList.RemoveRange(0, connectionList.Count - 10);
+                }
+            }
+            else
+            {
+                //리스트에 있으면 최하단으로
+                connectionList.Remove(item);
+                connectionList.Add(item);
+            }
+        }
     }
 }
