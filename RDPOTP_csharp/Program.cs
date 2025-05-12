@@ -4,6 +4,8 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.Json;
 using Microsoft.Extensions.Configuration.EnvironmentVariables;
 using System.Text;
+using System.Text.Json;
+
 
 namespace RdpOtp
 {
@@ -17,10 +19,6 @@ namespace RdpOtp
         static int webPort;
 
         static IConfiguration config;
-
-        //인증된 마지막 IP 및 시각
-        static IPAddress? lastAuthIp = null;
-        static DateTime lastAuthTime = DateTime.MinValue;
 
         static List<ConnectionInfo> connectionList = new List<ConnectionInfo>();
 
@@ -38,7 +36,8 @@ namespace RdpOtp
 
             var listener = new TcpListener(IPAddress.Any, proxyListenPort);
             listener.Start();
-            Console.WriteLine("RDP 프록시 서버 실행 중 (포트 3390)...");
+            Console.WriteLine($"RDP 프록시 서버 실행 중 (포트 {proxyListenPort})...");
+
 
             _ = Task.Run(() => RunWebServer());
             Console.WriteLine($"웹서버 실행 중: http://{((webHost == "localhost") ? "127.0.0.1" : webHost)}:{webPort}/");
@@ -78,26 +77,23 @@ namespace RdpOtp
                         item.state = pass;
                     }
 
-
-
-                    string html = "{";
-                    foreach (var ip in connectionList)
+                    var jsonList = connectionList.Select(c => new
                     {
-                        string json =
-                            $"{{\n" +
-                            $"  \"num\": \"{ip.num}\",\n" +
-                            $"  \"ip\": \"{ip.EndPoint.Address}\",\n" +
-                            $"  \"port\": {ip.EndPoint.Port}\n" +
-                            $"  \"state\": {ip.state}\n" +
-                            $"  \"time\": {ip.time}\n" +
-                            $"}},";
+                        num = c.num,
+                        ip = c.EndPoint.Address.ToString(),
+                        port = c.EndPoint.Port,
+                        state = c.state,
+                        time = c.time
+                    });
 
-                        html += json;
-                    }
-                    html += "}";
+                    string jsonOutput = JsonSerializer.Serialize(jsonList, new JsonSerializerOptions
+                    {
+                        WriteIndented = true
+                    });
 
-                    byte[] buffer = Encoding.UTF8.GetBytes(html);
-                    res.ContentType = "text/html";
+
+                    byte[] buffer = Encoding.UTF8.GetBytes(jsonOutput);
+                    res.ContentType = "application/json";
                     res.ContentLength64 = buffer.Length;
                     await res.OutputStream.WriteAsync(buffer, 0, buffer.Length);
                 }
@@ -143,7 +139,7 @@ namespace RdpOtp
 
             // 인증후 30초내 재연결시 인증없이 통과
             var item = connectionList.FirstOrDefault(c => c.EndPoint.Address.ToString() == connectionInfo.EndPoint.Address.ToString());
-            if (item!=null && item.state == 1 && (now - item.time).TotalSeconds <= 60)
+            if (item!=null && item.state == 1 && (now - item.time).TotalSeconds <= 30)
             {
                 updateTime(connectionInfo);
             }
@@ -169,9 +165,6 @@ namespace RdpOtp
             Console.WriteLine("\n[+] 인증 성공! 내부 RDP 서버에 연결 중...");
 
             now = DateTime.UtcNow;
-
-            lastAuthIp = ip;
-            lastAuthTime = now;
 
             try
             {
@@ -199,11 +192,13 @@ namespace RdpOtp
             catch (Exception ex)
             {
                 Console.WriteLine("[*] 연결 종료됨.");
+                // 시간 갱신
                 updateTime(connectionInfo);
             }
             finally
             {
                 Console.WriteLine("[*] 연결 종료됨.");
+                // 시간 갱신
                 updateTime(connectionInfo);
             }
         }
@@ -222,19 +217,20 @@ namespace RdpOtp
             config = new ConfigurationBuilder()
                 .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
                 .Build();
-            //Rdp설정
+
+            // Rdp설정
             rdpHost = config["RdpServer:Host"] ?? "127.0.0.1";
             rdpPort = int.Parse(config["RdpServer:Port"] ?? "3389");
 
-            //프록시 포트 설정
+            // 프록시 포트 설정
             proxyListenPort = int.Parse(config["Proxy:ListenPort"] ?? "3390");
 
-            //웹서버 설정
-            webHost = config["Web:ip"] ?? "localhost";
+            // 웹서버 설정
+            webHost = config["Web:Ip"] ?? "localhost";
             webPort = int.Parse(config["Web:Port"] ?? "8080");
         }
 
-        //접속시간 갱신
+        //접속시간 갱신127
         static void updateTime(ConnectionInfo conn,int addTime = 0)
         {
             conn.time = DateTime.UtcNow;
